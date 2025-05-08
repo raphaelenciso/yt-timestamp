@@ -52,20 +52,18 @@ interface VideoPlayerProps {
       type?: string;
     }[];
   };
-  startTime?: number | null;
-  endTime?: number | null;
+  timestampRanges?: Array<{ startSeconds: number | null; endSeconds: number | null }>;
   onReady?: (player: Player) => void;
 }
 
 const VideoPlayer = ({
   options,
-  startTime,
-  endTime,
+  timestampRanges = [],
   onReady,
 }: VideoPlayerProps) => {
   const videoRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<Player | null>(null);
-  const highlightRef = useRef<HTMLDivElement | null>(null);
+  const highlightRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   // Add custom CSS to document
   useEffect(() => {
@@ -78,37 +76,41 @@ const VideoPlayer = ({
     };
   }, []);
 
-  // Function to create and update time range highlight
-  const updateTimeRangeHighlight = (player: Player) => {
-    if (!player || !startTime || !endTime) return;
+  // Function to create and update time range highlights
+  const updateTimeRangeHighlights = (player: Player) => {
+    if (!player) return;
 
     // Get the progress control element
     const progressControl = player.el().querySelector('.vjs-progress-control');
     if (!progressControl) return;
 
-    // Create highlight element if it doesn't exist
-    if (!highlightRef.current) {
+    // Clear existing highlights
+    highlightRefs.current.forEach(ref => {
+      if (ref && ref.parentNode) {
+        ref.parentNode.removeChild(ref);
+      }
+    });
+    highlightRefs.current = [];
+
+    // Create new highlights for each timestamp range
+    timestampRanges.forEach((range, index) => {
+      if (range.startSeconds !== null && range.endSeconds !== null) {
       const highlight = document.createElement('div');
       highlight.className = 'vjs-time-range-highlight';
-      progressControl
-        .querySelector('.vjs-progress-holder')
-        ?.appendChild(highlight);
-      highlightRef.current = highlight;
-    }
+        progressControl.querySelector('.vjs-progress-holder')?.appendChild(highlight);
+        highlightRefs.current[index] = highlight;
 
-    // Get video duration and calculate positions
     const duration = player.duration();
     if (!duration || duration <= 0) return;
 
-    const startPercent = (startTime / duration) * 100;
-    const endPercent = (endTime / duration) * 100;
+        const startPercent = (range.startSeconds / duration) * 100;
+        const endPercent = (range.endSeconds / duration) * 100;
     const widthPercent = endPercent - startPercent;
 
-    // Apply styles to highlight element
-    if (highlightRef.current) {
-      highlightRef.current.style.left = `${startPercent}%`;
-      highlightRef.current.style.width = `${widthPercent}%`;
+        highlight.style.left = `${startPercent}%`;
+        highlight.style.width = `${widthPercent}%`;
     }
+    });
   };
 
   useEffect(() => {
@@ -158,58 +160,36 @@ const VideoPlayer = ({
           (el as HTMLElement).style.display = 'block';
         });
 
-        // Update the time range highlight
-        updateTimeRangeHighlight(player);
+        // Update the time range highlights
+        updateTimeRangeHighlights(player);
       });
 
-      // Update highlight on time updates
+      // Update highlights on time updates
       player.on('timeupdate', () => {
-        updateTimeRangeHighlight(player);
+        updateTimeRangeHighlights(player);
       });
 
       player.on('play', () => {
         console.log('play');
       });
-
-      // Add fcuntion on player on seeked
-      // player.on('seeked', () => {
-      //   const currentTime = player.currentTime();
-
-      //   if (
-      //     endTime !== null &&
-      //     endTime !== undefined &&
-      //     currentTime !== undefined &&
-      //     currentTime > endTime
-      //   ) {
-      //     player.currentTime(endTime);
-      //     player.pause();
-      //   } else if (
-      //     startTime !== null &&
-      //     startTime !== undefined &&
-      //     currentTime !== undefined &&
-      //     currentTime < startTime
-      //   ) {
-      //     player.currentTime(startTime);
-      //   }
-      // });
     } else if (playerRef.current) {
       // Update player if sources change
       const player = playerRef.current;
       player.src(options.sources);
 
-      // Update time range highlight when sources change
+      // Update time range highlights when sources change
       player.on('loadedmetadata', () => {
-        updateTimeRangeHighlight(player);
+        updateTimeRangeHighlights(player);
       });
     }
-  }, [options, onReady, startTime, endTime]);
+  }, [options, onReady, timestampRanges]);
 
-  // Update highlight when start or end time changes
+  // Update highlights when timestamp ranges change
   useEffect(() => {
     if (playerRef.current) {
-      updateTimeRangeHighlight(playerRef.current);
+      updateTimeRangeHighlights(playerRef.current);
     }
-  }, [startTime, endTime]);
+  }, [timestampRanges]);
 
   // Dispose the player on unmount
   useEffect(() => {
@@ -217,7 +197,7 @@ const VideoPlayer = ({
       if (playerRef.current) {
         playerRef.current.dispose();
         playerRef.current = null;
-        highlightRef.current = null;
+        highlightRefs.current = [];
       }
     };
   }, []);

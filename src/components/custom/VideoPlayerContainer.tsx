@@ -48,74 +48,34 @@ const timeToSeconds = (timeStr: string): number | null => {
   return null;
 };
 
+interface TimestampRange {
+  start: string;
+  end: string;
+  startSeconds: number | null;
+  endSeconds: number | null;
+  label?: string; // Optional label for the timestamp
+}
+
 const VideoPlayerContainer = () => {
   const [videoUrl, setVideoUrl] = useState('');
   const [currentVideoUrl, setCurrentVideoUrl] = useState('');
-  const [startTime, setStartTime] = useState('');
-  const [endTime, setEndTime] = useState('');
-  const [startSeconds, setStartSeconds] = useState<number | null>(null);
-  const [endSeconds, setEndSeconds] = useState<number | null>(null);
+  const [timestampRanges, setTimestampRanges] = useState<TimestampRange[]>([{ start: '', end: '', startSeconds: null, endSeconds: null, label: '' }]);
   const [player, setPlayer] = useState<Player | null>(null);
-  const [isYoutube, setIsYoutube] = useState(false);
 
   const handleLoadVideo = useCallback(() => {
     if (videoUrl) {
-      // First check if it's a YouTube video
-      const isYT = isYoutubeUrl(videoUrl);
-      setIsYoutube(isYT);
-
-      // Convert start and end times to seconds
-      const start = timeToSeconds(startTime);
-      const end = timeToSeconds(endTime);
-
-      setStartSeconds(start);
-      setEndSeconds(end);
+      // Convert start and end times to seconds for all ranges
+      const updatedRanges = timestampRanges.map(range => {
+        const startSec = timeToSeconds(range.start);
+        const endSec = timeToSeconds(range.end);
+        return { ...range, startSeconds: startSec, endSeconds: endSec };
+      });
+      setTimestampRanges(updatedRanges);
 
       // Set the current video URL last to trigger player update
       setCurrentVideoUrl(videoUrl);
     }
-  }, [videoUrl, startTime, endTime]);
-
-  // Apply time controls when player or time values change
-  useEffect(() => {
-    if (!player || isYoutube) return; // Skip for YouTube videos, handled by URL params
-
-    // Start time handling for direct videos
-    if (startSeconds !== null) {
-      player.currentTime(startSeconds);
-    }
-
-    // End time handling for direct videos
-    if (endSeconds !== null) {
-      const timeUpdateHandler = () => {
-        const currentTime = player.currentTime();
-        if (
-          currentTime !== undefined &&
-          endSeconds !== null &&
-          currentTime >= endSeconds
-        ) {
-          player.pause();
-          player.off('timeupdate', timeUpdateHandler);
-        }
-      };
-
-      player.on('timeupdate', timeUpdateHandler);
-
-      // Clean up the event handler when component unmounts or values change
-      return () => {
-        player.off('timeupdate', timeUpdateHandler);
-      };
-    }
-  }, [player, startSeconds, endSeconds, isYoutube]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter') {
-        handleLoadVideo();
-      }
-    },
-    [handleLoadVideo]
-  );
+  }, [videoUrl, timestampRanges]);
 
   const getVideoSource = useCallback(() => {
     if (!currentVideoUrl) return [];
@@ -123,30 +83,11 @@ const VideoPlayerContainer = () => {
     if (isYoutubeUrl(currentVideoUrl)) {
       const youtubeId = getYoutubeId(currentVideoUrl);
       if (youtubeId) {
-        // Use YouTube embed URL format instead of watch URL format
-        // This is the format that properly supports both start and end times
-        let youtubeUrl = `https://www.youtube.com/embed/${youtubeId}`;
-
-        // Add query parameters
-        const params = new URLSearchParams();
-
-        // Add start and end times if specified
-        if (startSeconds !== null) {
-          params.append('start', startSeconds.toString());
-        }
-
-        if (endSeconds !== null) {
-          params.append('end', endSeconds.toString());
-        }
-
-        // Add parameters to URL
-        if (params.toString()) {
-          youtubeUrl += `?${params.toString()}`;
-        }
-
+        // For YouTube videos, we need to use the standard watch URL to have better control over timestamps
+        // rather than the embed URL which might not work as expected with our timestamp control logic
         return [
           {
-            src: youtubeUrl,
+            src: `https://www.youtube.com/watch?v=${youtubeId}`,
             type: 'video/youtube',
           },
         ];
@@ -166,7 +107,198 @@ const VideoPlayerContainer = () => {
           : 'video/mp4',
       },
     ];
-  }, [currentVideoUrl, startSeconds, endSeconds]);
+  }, [currentVideoUrl]);
+
+  // Apply time controls when player or time values change
+  useEffect(() => {
+    if (!player) return; // We'll handle both direct and YouTube videos here
+
+    // For videos, handle multiple timestamp ranges
+    if (timestampRanges.length > 0) {
+      // Filter out invalid ranges
+      const validRanges = timestampRanges.filter(range => 
+        range.startSeconds !== null && 
+        range.endSeconds !== null &&
+        range.start.trim() !== '' &&
+        range.end.trim() !== ''
+      );
+      
+      if (validRanges.length === 0) return;
+
+      // Sort ranges by start time
+      validRanges.sort((a, b) => (a.startSeconds || 0) - (b.startSeconds || 0));
+
+      // Track current segment index
+      let currentSegmentIndex = 0;
+
+      // Initialize to first segment when video loads
+      const initializeSegment = () => {
+        const firstRange = validRanges[0];
+        const startSeconds = firstRange?.startSeconds;
+        if (validRanges.length > 0 && firstRange && startSeconds !== null && startSeconds !== undefined) {
+          console.log('Initializing to first segment:', startSeconds);
+          player.currentTime(startSeconds);
+          player.play().catch(err => console.error('Failed to play first segment:', err));
+        }
+      };
+
+      // Handle segment ending and jumping to next segment
+      const timeUpdateHandler = () => {
+        const currentTime = player.currentTime() || 0;
+        
+        // If we're between segments or before first segment, find where we should be
+        let targetSegmentIndex = -1;
+        
+        // Check if we're in any segment
+        for (let i = 0; i < validRanges.length; i++) {
+          const range = validRanges[i];
+          if (range.startSeconds !== null && range.endSeconds !== null) {
+            if (currentTime >= range.startSeconds && currentTime < range.endSeconds) {
+              // We're in this segment
+              currentSegmentIndex = i;
+              targetSegmentIndex = i;
+              break;
+            }
+          }
+        }
+        
+        // If we've passed the end of a segment, jump to the next one
+        if (targetSegmentIndex === -1) {
+          // We're not in any segment. Check if we've just passed a segment end
+          for (let i = 0; i < validRanges.length; i++) {
+            const range = validRanges[i];
+            // Add 0.5 seconds buffer to the end time before jumping
+            const bufferedEndTime = range.endSeconds !== null ? range.endSeconds + 0.5 : null;
+            if (bufferedEndTime !== null && currentTime >= bufferedEndTime) {
+              // We've passed this segment (with buffer)
+              if (i === currentSegmentIndex && i < validRanges.length - 1) {
+                // We just finished the current segment, jump to next one
+                const nextRange = validRanges[i + 1];
+                if (nextRange && nextRange.startSeconds !== null) {
+                  console.log(`Segment ${i} finished, jumping to segment ${i + 1} at ${nextRange.startSeconds}`);
+                  player.currentTime(nextRange.startSeconds);
+                  currentSegmentIndex = i + 1;
+                  return;
+                }
+              }
+            }
+          }
+          
+          // If we're before the first segment, jump to it
+          if (validRanges.length > 0 && validRanges[0].startSeconds !== null && currentTime < validRanges[0].startSeconds) {
+            initializeSegment();
+            return;
+          }
+          
+          // If we're after the last segment, pause
+          const lastSegment = validRanges[validRanges.length - 1];
+          const bufferedLastEndTime = lastSegment.endSeconds !== null ? lastSegment.endSeconds + 0.5 : null;
+          if (bufferedLastEndTime !== null && currentTime > bufferedLastEndTime) {
+            console.log('After last segment, pausing');
+            player.pause();
+            return;
+          }
+        }
+      };
+
+      // Stop the video from playing outside segments
+      const seekedHandler = () => {
+        const currentTime = player.currentTime() || 0;
+        
+        // Check if we're in any valid segment
+        let inSegment = false;
+        for (const range of validRanges) {
+          if (range.startSeconds !== null && range.endSeconds !== null) {
+            if (currentTime >= range.startSeconds && currentTime < range.endSeconds) {
+              inSegment = true;
+              break;
+            }
+          }
+        }
+        
+        // If user manually seeks outside all segments
+        if (!inSegment) {
+          // If before first segment, jump to first segment
+          if (currentTime < (validRanges[0]?.startSeconds || 0)) {
+            initializeSegment();
+          } 
+          // If after last segment, stay paused
+          else if (currentTime > (validRanges[validRanges.length - 1]?.endSeconds || 0)) {
+            player.pause();
+          }
+          // If between segments, jump to next segment
+          else {
+            // Find the next segment
+            for (let i = 0; i < validRanges.length; i++) {
+              const range = validRanges[i];
+              if (range.startSeconds !== null && currentTime < range.startSeconds) {
+                console.log(`User seeked between segments, jumping to segment ${i} at ${range.startSeconds}`);
+                player.currentTime(range.startSeconds);
+                currentSegmentIndex = i;
+                break;
+              }
+            }
+          }
+        }
+      };
+
+      // Add end-of-video handler to prevent auto-replay
+      const endedHandler = () => {
+        console.log('Video ended, preventing auto-replay');
+        // Prevent the player from automatically restarting
+        player.pause();
+        // Move to the end of the last segment to prevent restart
+        if (validRanges.length > 0 && validRanges[validRanges.length - 1].endSeconds) {
+          player.currentTime(validRanges[validRanges.length - 1].endSeconds - 0.1);
+        }
+      };
+
+      // Initialize to first segment 
+      initializeSegment();
+      
+      // Register handlers
+      player.on('timeupdate', timeUpdateHandler);
+      player.on('seeked', seekedHandler);
+      player.on('ended', endedHandler);
+      
+      // Clean up the event handlers when component unmounts or values change
+      return () => {
+        player.off('timeupdate', timeUpdateHandler);
+        player.off('seeked', seekedHandler);
+        player.off('ended', endedHandler);
+      };
+    }
+  }, [player, timestampRanges]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        handleLoadVideo();
+      }
+    },
+    [handleLoadVideo]
+  );
+
+  const addTimestampRange = () => {
+    setTimestampRanges([...timestampRanges, { start: '', end: '', startSeconds: null, endSeconds: null, label: '' }]);
+  };
+
+  const updateTimestampRange = (index: number, field: 'start' | 'end', value: string) => {
+    const updatedRanges = [...timestampRanges];
+    updatedRanges[index][field] = value;
+    setTimestampRanges(updatedRanges);
+  };
+
+  const jumpToTimestamp = (index: number) => {
+    if (!player) return;
+    
+    const range = timestampRanges[index];
+    if (range.startSeconds !== null) {
+      console.log(`Jumping to Timestamp ${index + 1} (${range.start})`);
+      player.currentTime(range.startSeconds);
+      player.play().catch(err => console.error('Failed to play after clicking timestamp:', err));
+    }
+  };
 
   const videoJsOptions = {
     autoplay: false,
@@ -179,9 +311,6 @@ const VideoPlayerContainer = () => {
   const handlePlayerReady = useCallback((videoPlayer: Player) => {
     // Store the player instance to use in effects
     setPlayer(videoPlayer);
-
-    // No need for special handling of YouTube end times anymore
-    // The embed URL with end parameter will handle it automatically
   }, []);
 
   return (
@@ -194,8 +323,7 @@ const VideoPlayerContainer = () => {
           <VideoPlayer
             options={videoJsOptions}
             onReady={handlePlayerReady}
-            startTime={startSeconds}
-            endTime={endSeconds}
+            timestampRanges={timestampRanges}
           />
         ) : (
           <div className="w-full aspect-video bg-slate-800 flex items-center justify-center text-white">
@@ -214,27 +342,42 @@ const VideoPlayerContainer = () => {
             />
             <Button onClick={handleLoadVideo}>Load Video</Button>
           </div>
-          <div className="flex space-x-2">
-            <Input
-              type="text"
-              placeholder="Start time (HH:MM:SS, MM:SS, or SS) - Optional"
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              className="flex-1"
-            />
-            <Input
-              type="text"
-              placeholder="End time (HH:MM:SS, MM:SS, or SS) - Optional"
-              value={endTime}
-              onChange={(e) => setEndTime(e.target.value)}
-              className="flex-1"
-            />
+          
+          <div className="space-y-3">
+            <h3 className="font-medium text-sm mb-2">Define Timestamp Segments:</h3>
+            {timestampRanges.map((range, index) => (
+              <div key={index} className="flex space-x-2 items-center p-2 border rounded-md">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="flex-none font-medium px-2 py-1 h-auto min-w-[40px] hover:bg-gray-100"
+                  onClick={() => jumpToTimestamp(index)}
+                  disabled={!range.start || !range.startSeconds}
+                >
+                  Segment {index + 1}
+                </Button>
+                <Input
+                  type="text"
+                  placeholder="Start time (HH:MM:SS, MM:SS, or SS)"
+                  value={range.start}
+                  onChange={(e) => updateTimestampRange(index, 'start', e.target.value)}
+                  className="flex-1"
+                />
+                <Input
+                  type="text"
+                  placeholder="End time (HH:MM:SS, MM:SS, or SS)"
+                  value={range.end}
+                  onChange={(e) => updateTimestampRange(index, 'end', e.target.value)}
+                  className="flex-1"
+                />
+              </div>
+            ))}
+            <Button onClick={addTimestampRange} className="w-full">Add Timestamp Range</Button>
           </div>
         </div>
       </CardContent>
       <CardFooter className="text-sm text-gray-500">
-        Supports direct video links and YouTube URLs with optional start and end
-        times
+        Supports direct video links and YouTube URLs with multiple timestamp ranges
       </CardFooter>
     </Card>
   );
