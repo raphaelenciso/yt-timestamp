@@ -169,9 +169,6 @@ const VideoPlayer = ({
         updateTimeRangeHighlights(player);
       });
 
-      player.on('play', () => {
-        console.log('play');
-      });
     } else if (playerRef.current) {
       // Update player if sources change
       const player = playerRef.current;

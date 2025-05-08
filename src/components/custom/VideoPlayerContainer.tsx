@@ -136,7 +136,6 @@ const VideoPlayerContainer = () => {
         const firstRange = validRanges[0];
         const startSeconds = firstRange?.startSeconds;
         if (validRanges.length > 0 && firstRange && startSeconds !== null && startSeconds !== undefined) {
-          console.log('Initializing to first segment:', startSeconds);
           player.currentTime(startSeconds);
           player.play().catch(err => console.error('Failed to play first segment:', err));
         }
@@ -175,7 +174,6 @@ const VideoPlayerContainer = () => {
                 // We just finished the current segment, jump to next one
                 const nextRange = validRanges[i + 1];
                 if (nextRange && nextRange.startSeconds !== null) {
-                  console.log(`Segment ${i} finished, jumping to segment ${i + 1} at ${nextRange.startSeconds}`);
                   player.currentTime(nextRange.startSeconds);
                   currentSegmentIndex = i + 1;
                   return;
@@ -194,7 +192,6 @@ const VideoPlayerContainer = () => {
           const lastSegment = validRanges[validRanges.length - 1];
           const bufferedLastEndTime = lastSegment.endSeconds !== null ? lastSegment.endSeconds + 0.5 : null;
           if (bufferedLastEndTime !== null && currentTime > bufferedLastEndTime) {
-            console.log('After last segment, pausing');
             player.pause();
             return;
           }
@@ -232,7 +229,6 @@ const VideoPlayerContainer = () => {
             for (let i = 0; i < validRanges.length; i++) {
               const range = validRanges[i];
               if (range.startSeconds !== null && currentTime < range.startSeconds) {
-                console.log(`User seeked between segments, jumping to segment ${i} at ${range.startSeconds}`);
                 player.currentTime(range.startSeconds);
                 currentSegmentIndex = i;
                 break;
@@ -244,7 +240,6 @@ const VideoPlayerContainer = () => {
 
       // Add end-of-video handler to prevent auto-replay
       const endedHandler = () => {
-        console.log('Video ended, preventing auto-replay');
         // Prevent the player from automatically restarting
         player.pause();
         // Move to the end of the last segment to prevent restart
@@ -294,7 +289,6 @@ const VideoPlayerContainer = () => {
     
     const range = timestampRanges[index];
     if (range.startSeconds !== null) {
-      console.log(`Jumping to Timestamp ${index + 1} (${range.start})`);
       player.currentTime(range.startSeconds);
       player.play().catch(err => console.error('Failed to play after clicking timestamp:', err));
     }
