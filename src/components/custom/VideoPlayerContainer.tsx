@@ -56,11 +56,52 @@ interface TimestampRange {
   label?: string; // Optional label for the timestamp
 }
 
-const VideoPlayerContainer = () => {
-  const [videoUrl, setVideoUrl] = useState('');
+interface VideoPlayerContainerProps {
+  initialVideoUrl?: string;
+  initialSingleSegmentMode?: boolean;
+  initialTimestampRanges?: TimestampRange[];
+  onSingleSegmentModeChange?: (isSingleSegment: boolean) => void;
+  onActiveSegmentChange?: (index: number) => void;
+  onTimestampRangesChange?: (ranges: TimestampRange[]) => void;
+}
+
+const VideoPlayerContainer = ({
+  initialVideoUrl = '',
+  initialSingleSegmentMode = false,
+  initialTimestampRanges = [{ start: '', end: '', startSeconds: null, endSeconds: null, label: '' }],
+  onSingleSegmentModeChange,
+  onActiveSegmentChange,
+  onTimestampRangesChange
+}: VideoPlayerContainerProps) => {
+  const [videoUrl, setVideoUrl] = useState(initialVideoUrl);
   const [currentVideoUrl, setCurrentVideoUrl] = useState('');
-  const [timestampRanges, setTimestampRanges] = useState<TimestampRange[]>([{ start: '', end: '', startSeconds: null, endSeconds: null, label: '' }]);
+  const [timestampRanges, setTimestampRanges] = useState<TimestampRange[]>(initialTimestampRanges);
   const [player, setPlayer] = useState<Player | null>(null);
+  // Track whether we're in single segment mode (when user clicks a segment)
+  const [singleSegmentMode, setSingleSegmentMode] = useState(initialSingleSegmentMode);
+  const [activeSegmentIndex, setActiveSegmentIndex] = useState(-1);
+
+  // Callback handlers for state changes
+  const handleSingleSegmentModeChange = useCallback((newMode: boolean) => {
+    setSingleSegmentMode(newMode);
+    if (onSingleSegmentModeChange) {
+      onSingleSegmentModeChange(newMode);
+    }
+  }, [onSingleSegmentModeChange]);
+
+  const handleActiveSegmentChange = useCallback((index: number) => {
+    setActiveSegmentIndex(index);
+    if (onActiveSegmentChange) {
+      onActiveSegmentChange(index);
+    }
+  }, [onActiveSegmentChange]);
+
+  const handleTimestampRangesChange = useCallback((ranges: TimestampRange[]) => {
+    setTimestampRanges(ranges);
+    if (onTimestampRangesChange) {
+      onTimestampRangesChange(ranges);
+    }
+  }, [onTimestampRangesChange]);
 
   const handleLoadVideo = useCallback(() => {
     if (videoUrl) {
@@ -70,12 +111,12 @@ const VideoPlayerContainer = () => {
         const endSec = timeToSeconds(range.end);
         return { ...range, startSeconds: startSec, endSeconds: endSec };
       });
-      setTimestampRanges(updatedRanges);
+      handleTimestampRangesChange(updatedRanges);
 
       // Set the current video URL last to trigger player update
       setCurrentVideoUrl(videoUrl);
     }
-  }, [videoUrl, timestampRanges]);
+  }, [videoUrl, timestampRanges, handleTimestampRangesChange]);
 
   const getVideoSource = useCallback(() => {
     if (!currentVideoUrl) return [];
@@ -143,7 +184,19 @@ const VideoPlayerContainer = () => {
 
       // Handle segment ending and jumping to next segment
       const timeUpdateHandler = () => {
-        const currentTime = player.currentTime() || 0;
+        const currentTime = player!.currentTime() || 0;
+        
+        // Check all segments to see if we need to pause at the end of the current segment
+        if (singleSegmentMode && activeSegmentIndex >= 0) {
+          const activeRange = validRanges[activeSegmentIndex];
+          if (activeRange?.endSeconds && currentTime >= activeRange.endSeconds) {
+            // We've reached the end of the active segment in single segment mode
+            // Pause and position exactly at the end time
+            player!.pause();
+            player!.currentTime(activeRange.endSeconds);
+            return;
+          }
+        }
         
         // If we're between segments or before first segment, find where we should be
         let targetSegmentIndex = -1;
@@ -161,7 +214,7 @@ const VideoPlayerContainer = () => {
           }
         }
         
-        // If we've passed the end of a segment, jump to the next one
+        // If we've passed the end of a segment, jump to the next one or pause based on mode
         if (targetSegmentIndex === -1) {
           // We're not in any segment. Check if we've just passed a segment end
           for (let i = 0; i < validRanges.length; i++) {
@@ -170,13 +223,16 @@ const VideoPlayerContainer = () => {
             const bufferedEndTime = range.endSeconds !== null ? range.endSeconds + 0.5 : null;
             if (bufferedEndTime !== null && currentTime >= bufferedEndTime) {
               // We've passed this segment (with buffer)
-              if (i === currentSegmentIndex && i < validRanges.length - 1) {
-                // We just finished the current segment, jump to next one
-                const nextRange = validRanges[i + 1];
-                if (nextRange && nextRange.startSeconds !== null) {
-                  player.currentTime(nextRange.startSeconds);
-                  currentSegmentIndex = i + 1;
-                  return;
+              if (i === currentSegmentIndex) {
+                // In auto-play mode, jump to the next segment
+                if (!singleSegmentMode && i < validRanges.length - 1) {
+                  // We just finished the current segment, jump to next one
+                  const nextRange = validRanges[i + 1];
+                  if (nextRange && nextRange.startSeconds !== null) {
+                    player!.currentTime(nextRange.startSeconds);
+                    currentSegmentIndex = i + 1;
+                    return;
+                  }
                 }
               }
             }
@@ -263,7 +319,7 @@ const VideoPlayerContainer = () => {
         player.off('ended', endedHandler);
       };
     }
-  }, [player, timestampRanges]);
+  }, [player, timestampRanges, singleSegmentMode, activeSegmentIndex]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -275,13 +331,14 @@ const VideoPlayerContainer = () => {
   );
 
   const addTimestampRange = () => {
-    setTimestampRanges([...timestampRanges, { start: '', end: '', startSeconds: null, endSeconds: null, label: '' }]);
+    const newRanges = [...timestampRanges, { start: '', end: '', startSeconds: null, endSeconds: null, label: '' }];
+    handleTimestampRangesChange(newRanges);
   };
 
   const updateTimestampRange = (index: number, field: 'start' | 'end', value: string) => {
     const updatedRanges = [...timestampRanges];
     updatedRanges[index][field] = value;
-    setTimestampRanges(updatedRanges);
+    handleTimestampRangesChange(updatedRanges);
   };
 
   const jumpToTimestamp = (index: number) => {
@@ -289,6 +346,10 @@ const VideoPlayerContainer = () => {
     
     const range = timestampRanges[index];
     if (range.startSeconds !== null) {
+      // Enable single segment mode and set active segment
+      handleSingleSegmentModeChange(true);
+      handleActiveSegmentChange(index);
+      
       player.currentTime(range.startSeconds);
       player.play().catch(err => console.error('Failed to play after clicking timestamp:', err));
     }
@@ -337,6 +398,21 @@ const VideoPlayerContainer = () => {
             <Button onClick={handleLoadVideo}>Load Video</Button>
           </div>
           
+          {/* Playback mode toggle */}
+          {currentVideoUrl && (
+            <div className="flex items-center justify-between mb-2 pb-2 border-b">
+              <span className="text-sm font-medium">Playback Mode:</span>
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => handleSingleSegmentModeChange(!singleSegmentMode)}
+                className="ml-2"
+              >
+                {singleSegmentMode ? "Single Segment Mode" : "Auto-play All Segments"}
+              </Button>
+            </div>
+          )}
+          
           <div className="space-y-3">
             <h3 className="font-medium text-sm mb-2">Define Timestamp Segments:</h3>
             {timestampRanges.map((range, index) => (
@@ -350,20 +426,20 @@ const VideoPlayerContainer = () => {
                 >
                   Segment {index + 1}
                 </Button>
-                <Input
-                  type="text"
+            <Input
+              type="text"
                   placeholder="Start time (HH:MM:SS, MM:SS, or SS)"
                   value={range.start}
                   onChange={(e) => updateTimestampRange(index, 'start', e.target.value)}
-                  className="flex-1"
-                />
-                <Input
-                  type="text"
+              className="flex-1"
+            />
+            <Input
+              type="text"
                   placeholder="End time (HH:MM:SS, MM:SS, or SS)"
                   value={range.end}
                   onChange={(e) => updateTimestampRange(index, 'end', e.target.value)}
-                  className="flex-1"
-                />
+              className="flex-1"
+            />
               </div>
             ))}
             <Button onClick={addTimestampRange} className="w-full">Add Timestamp Range</Button>
